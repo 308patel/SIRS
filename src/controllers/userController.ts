@@ -1,8 +1,8 @@
 import { Request, Response, NextFunction } from 'express';
-
 import prisma from '../config/prisma';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import { Role, UserStatus } from '../constant/enum';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'supersecretkey';
 
@@ -118,5 +118,335 @@ export const refreshToken = async (req: Request, res: Response) => {
     });
   } catch (e) {
     res.status(401).json({ status: 401, message: 'Invalid refresh token' });
+  }
+};
+
+export const getUserProfile = async (req: Request, res: Response) => {
+  try {
+    const user = await prisma.user.findFirst({
+      where: { id: req.params.id, deleted_at: null },
+      include: {
+        warehouse: {
+          select: {
+            id: true,
+            name: true,
+            warehouse_code: true
+          }
+        }
+      }
+    });
+    if (!user) {
+      return res.status(404).json({ status: 404, message: 'User not found' });
+    }
+    const { password_hash, ...profile } = user;
+    res.status(200).json({
+      status: 200,
+      message: 'User profile retrieved successfully',
+      data: profile,
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ status: 500, message: 'Server error while retrieving user profile' });
+  }
+};
+
+export const getOwnProfile = async (req: Request, res: Response) => {
+  try {
+    const role = (req as any).role;
+    if (role === Role.COMPANY) {
+      const companyId = (req as any).companyId;
+      const company = await prisma.company.findUnique({
+        where: { id: companyId },
+      });
+      if (!company) {
+        return res.status(404).json({ status: 404, message: 'Company not found' });
+      }
+      const { password_hash, ...profile } = company;
+      return res.status(200).json({
+        status: 200,
+        message: 'Own profile retrieved successfully',
+        data: profile,
+      });
+    } else {
+      const userId = (req as any).userId;
+      const user = await prisma.user.findFirst({
+        where: { id: userId, deleted_at: null },
+        include: {
+          warehouse: {
+            select: {
+              id: true,
+              name: true,
+              warehouse_code: true
+            }
+          }
+        }
+      });
+      if (!user) {
+        return res.status(404).json({ status: 404, message: 'User not found' });
+      }
+      const { password_hash, ...profile } = user;
+      return res.status(200).json({
+        status: 200,
+        message: 'Own profile retrieved successfully',
+        data: profile,
+      });
+    }
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ status: 500, message: 'Server error while retrieving own profile' });
+  }
+};
+
+export const updateUserProfile = async (req: Request, res: Response) => {
+  try {
+    const user = await prisma.user.findFirst({
+      where: { id: req.params.id, deleted_at: null },
+    });
+    if (!user) {
+      return res.status(404).json({ status: 404, message: 'User not found' });
+    }
+
+    const updaterRole = (req as any).role;
+    let loggedInCompanyId: string | null = null;
+    if (updaterRole === Role.COMPANY) {
+      loggedInCompanyId = (req as any).companyId;
+    } else {
+      const adminUser = await prisma.user.findUnique({
+        where: { id: (req as any).userId }
+      });
+      loggedInCompanyId = adminUser?.company_id || null;
+    }
+
+    if (!loggedInCompanyId || user.company_id !== loggedInCompanyId) {
+      return res.status(403).json({ status: 403, message: "Not authorized to update this user" });
+    }
+
+    const { name, phone, role, status, warehouse_id } = req.body;
+
+    if (warehouse_id !== undefined) {
+      if (warehouse_id !== null && warehouse_id !== "") {
+        const wh = await prisma.warehouse.findFirst({
+          where: { id: warehouse_id, deleted_at: null }
+        });
+        if (!wh) {
+          return res.status(404).json({ status: 404, message: 'Warehouse not found' });
+        }
+        if (!user.company_id) {
+          return res.status(400).json({ status: 400, message: "User must belong to a company before being assigned to a warehouse" });
+        }
+        if (wh.warehouse_company_id !== user.company_id) {
+          return res.status(400).json({ status: 400, message: "Warehouse does not belong to the user's company" });
+        }
+      }
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: req.params.id },
+      data: {
+        name: name !== undefined ? name : undefined,
+        phone: phone !== undefined ? phone : undefined,
+        role: role !== undefined ? role : undefined,
+        status: status !== undefined ? status : undefined,
+        warehouse_id: warehouse_id !== undefined ? (warehouse_id === "" ? null : warehouse_id) : undefined,
+      },
+      include: {
+        warehouse: {
+          select: {
+            id: true,
+            name: true,
+            warehouse_code: true
+          }
+        }
+      }
+    });
+
+    const { password_hash, ...profile } = updated;
+    res.status(200).json({
+      status: 200,
+      message: 'User profile updated successfully',
+      data: profile,
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ status: 500, message: 'Server error while updating user profile' });
+  }
+};
+
+export const deactivateUser = async (req: Request, res: Response) => {
+  try {
+    const user = await prisma.user.findFirst({
+      where: { id: req.params.id, deleted_at: null },
+    });
+    if (!user) {
+      return res.status(404).json({ status: 404, message: 'User not found' });
+    }
+
+    await prisma.user.update({
+      where: { id: req.params.id },
+      data: { status: UserStatus.INACTIVE },
+    });
+
+    res.status(200).json({
+      status: 200,
+      message: 'User deactivated successfully',
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ status: 500, message: 'Server error while deactivating user' });
+  }
+};
+
+export const softDeleteUser = async (req: Request, res: Response) => {
+  try {
+    const user = await prisma.user.findFirst({
+      where: { id: req.params.id, deleted_at: null },
+    });
+    if (!user) {
+      return res.status(404).json({ status: 404, message: 'User not found' });
+    }
+
+    await prisma.user.update({
+      where: { id: req.params.id },
+      data: { deleted_at: new Date() },
+    });
+
+    res.status(200).json({
+      status: 200,
+      message: 'User soft deleted successfully',
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ status: 500, message: 'Server error while deleting user' });
+  }
+};
+
+// User selects a company to join
+export const selectCompany = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId;
+    const { companyId } = req.body;
+
+    if (!companyId) {
+      return res.status(400).json({ status: 400, message: "Company ID is required" });
+    }
+
+    // Verify company exists
+    const company = await prisma.company.findUnique({
+      where: { id: companyId }
+    });
+
+    if (!company) {
+      return res.status(404).json({ status: 404, message: "Company not found" });
+    }
+
+    // Update user's requested_company_id
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        requested_company_id: companyId,
+        updated_at: new Date()
+      }
+    });
+
+    const { password_hash, ...profile } = updatedUser;
+    return res.status(200).json({
+      status: 200,
+      message: "Company selection request submitted successfully",
+      data: profile
+    });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ status: 500, message: "Server error while selecting company" });
+  }
+};
+
+// Admin/Company accepts a user's join request
+export const acceptJoinRequest = async (req: Request, res: Response) => {
+  try {
+    const role = (req as any).role;
+    const userId = req.body.userId || req.params.id;
+    const warehouse_id = req.body.warehouse_id || req.body.warehouseId || req.body.workshopId || req.body.workshop_id;
+
+    if (!userId) {
+      return res.status(400).json({ status: 400, message: "User ID is required" });
+    }
+
+    let targetCompanyId: string | null = null;
+
+    if (role === Role.COMPANY) {
+      targetCompanyId = (req as any).companyId;
+    } else {
+      const adminUserId = (req as any).userId;
+      const adminUser = await prisma.user.findUnique({
+        where: { id: adminUserId }
+      });
+      targetCompanyId = adminUser?.company_id || null;
+    }
+
+    if (!targetCompanyId) {
+      return res.status(403).json({
+        status: 403,
+        message: "Accepting administrator/company is not associated with any company"
+      });
+    }
+
+    // Fetch the target user
+    const targetUser = await prisma.user.findFirst({
+      where: { id: userId, deleted_at: null }
+    });
+
+    if (!targetUser) {
+      return res.status(404).json({ status: 404, message: "User not found" });
+    }
+
+    if (!targetUser.requested_company_id) {
+      return res.status(400).json({
+        status: 400,
+        message: "User has not requested to join any company"
+      });
+    }
+
+    if (targetUser.requested_company_id !== targetCompanyId) {
+      return res.status(403).json({
+        status: 403,
+        message: "Not authorized: the user has requested to join a different company"
+      });
+    }
+
+    // Validate warehouse_id if provided
+    if (warehouse_id) {
+      const wh = await prisma.warehouse.findFirst({
+        where: { id: warehouse_id, deleted_at: null }
+      });
+      if (!wh) {
+        return res.status(404).json({ status: 404, message: 'Warehouse not found' });
+      }
+      if (wh.warehouse_company_id !== targetCompanyId) {
+        return res.status(400).json({ status: 400, message: "Warehouse does not belong to the user's company" });
+      }
+    }
+
+    // Update the target user: set company_id to the selected company, clear requested_company_id, and assign warehouse_id if provided
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        company_id: targetUser.requested_company_id,
+        requested_company_id: null,
+        warehouse_id: warehouse_id || null,
+        updated_at: new Date()
+      }
+    });
+
+    const { password_hash, ...profile } = updatedUser;
+    return res.status(200).json({
+      status: 200,
+      message: "User join request accepted successfully",
+      data: profile
+    });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ status: 500, message: "Server error while accepting join request" });
   }
 };

@@ -1,11 +1,38 @@
 import { Request, Response } from 'express';
 import prisma from '../config/prisma';
-import { TransferStatus, StockMovementType } from '../constant/enum';
+import { Role, TransferStatus, StockMovementType } from '../constant/enum';
 
-// POST /transfers - Create transfer request
+// Helper: returns accessible warehouse IDs for the current user.
+// Returns null for ADMIN/SUPER_ADMIN (no restriction), [] if user has no warehouses.
+async function getUserWarehouseIds(userId: string, role: string): Promise<string[] | null> {
+  if (role === Role.ADMIN || role === Role.SUPER_ADMIN) {
+    return null;
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      warehouse_id: true,
+      warehouse_manager: { select: { id: true } },
+      warehouse_logistic_manager: { select: { id: true } },
+    },
+  });
+
+  if (!user) return [];
+
+  const ids = new Set<string>();
+  if (user.warehouse_id) ids.add(user.warehouse_id);
+  user.warehouse_manager.forEach((w) => ids.add(w.id));
+  user.warehouse_logistic_manager.forEach((w) => ids.add(w.id));
+
+  return Array.from(ids);
+}
+
+// POST /transfers - Create transfer request (LM/AD — only between accessible warehouses)
 export const createTransfer = async (req: Request, res: Response) => {
   const { source_warehouse_id, destination_warehouse_id, product_id, quantity } = req.body;
   const userId = (req as any).userId;
+  const role = (req as any).role;
 
   try {
     if (!source_warehouse_id || !destination_warehouse_id || !product_id || !quantity) {
@@ -26,6 +53,20 @@ export const createTransfer = async (req: Request, res: Response) => {
 
     if (!sourceWarehouse || !destWarehouse) {
       return res.status(404).json({ status: 404, message: 'One or both warehouses do not exist' });
+    }
+
+    // Enforce warehouse scope: user must be associated with at least one of the two warehouses
+    const accessibleIds = await getUserWarehouseIds(userId, role);
+    if (accessibleIds !== null) {
+      const hasAccess =
+        accessibleIds.includes(source_warehouse_id) ||
+        accessibleIds.includes(destination_warehouse_id);
+      if (!hasAccess) {
+        return res.status(403).json({
+          status: 403,
+          message: 'Forbidden: You are not authorized to create transfers for these warehouses',
+        });
+      }
     }
 
     // Check if product exists
@@ -62,10 +103,25 @@ export const createTransfer = async (req: Request, res: Response) => {
   }
 };
 
-// GET /transfers - List all transfers
+// GET /transfers - List transfers (ADMIN sees all; WM/LM see only transfers involving their warehouses)
 export const listTransfers = async (req: Request, res: Response) => {
+  const userId = (req as any).userId;
+  const role = (req as any).role;
+
   try {
+    const accessibleIds = await getUserWarehouseIds(userId, role);
+
+    const whereClause = accessibleIds !== null
+      ? {
+          OR: [
+            { source_warehouse_id: { in: accessibleIds } },
+            { destination_warehouse_id: { in: accessibleIds } },
+          ],
+        }
+      : {};
+
     const transfers = await prisma.transfer.findMany({
+      where: whereClause,
       include: {
         source_warehouse: true,
         destination_warehouse: true,
@@ -91,9 +147,11 @@ export const listTransfers = async (req: Request, res: Response) => {
   }
 };
 
-// GET /transfers/:id - Transfer details
+// GET /transfers/:id - Transfer details (scoped)
 export const getTransferDetails = async (req: Request, res: Response) => {
   const { id } = req.params;
+  const userId = (req as any).userId;
+  const role = (req as any).role;
 
   try {
     const transfer = await prisma.transfer.findUnique({
@@ -117,6 +175,20 @@ export const getTransferDetails = async (req: Request, res: Response) => {
 
     if (!transfer) {
       return res.status(404).json({ status: 404, message: 'Transfer request not found' });
+    }
+
+    // Enforce warehouse scope
+    const accessibleIds = await getUserWarehouseIds(userId, role);
+    if (accessibleIds !== null) {
+      const hasAccess =
+        accessibleIds.includes(transfer.source_warehouse_id) ||
+        accessibleIds.includes(transfer.destination_warehouse_id);
+      if (!hasAccess) {
+        return res.status(403).json({
+          status: 403,
+          message: 'Forbidden: You do not have access to this transfer',
+        });
+      }
     }
 
     return res.status(200).json({
@@ -170,10 +242,11 @@ export const approveTransfer = async (req: Request, res: Response) => {
   }
 };
 
-// PATCH /transfers/:id/dispatch - Mark as dispatched (WM)
+// PATCH /transfers/:id/dispatch - Mark as dispatched (WM — must manage source warehouse)
 export const dispatchTransfer = async (req: Request, res: Response) => {
   const { id } = req.params;
   const userId = (req as any).userId;
+  const role = (req as any).role;
 
   try {
     const transfer = await prisma.transfer.findUnique({
@@ -185,6 +258,15 @@ export const dispatchTransfer = async (req: Request, res: Response) => {
 
     if (!transfer) {
       return res.status(404).json({ status: 404, message: 'Transfer request not found' });
+    }
+
+    // Enforce warehouse scope: dispatcher must manage the source warehouse
+    const accessibleIds = await getUserWarehouseIds(userId, role);
+    if (accessibleIds !== null && !accessibleIds.includes(transfer.source_warehouse_id)) {
+      return res.status(403).json({
+        status: 403,
+        message: 'Forbidden: You can only dispatch transfers from your own warehouse',
+      });
     }
 
     if (transfer.status !== TransferStatus.APPROVED) {
@@ -200,6 +282,8 @@ export const dispatchTransfer = async (req: Request, res: Response) => {
         }
       }
     });
+
+    console.log(transfer,sourceInventory, transfer.quantity)
 
     if (!sourceInventory || sourceInventory.quantity < transfer.quantity) {
       return res.status(400).json({
@@ -253,10 +337,11 @@ export const dispatchTransfer = async (req: Request, res: Response) => {
   }
 };
 
-// PATCH /transfers/:id/receive - Confirm receipt at destination (WM)
+// PATCH /transfers/:id/receive - Confirm receipt at destination (WM — must manage destination warehouse)
 export const receiveTransfer = async (req: Request, res: Response) => {
   const { id } = req.params;
   const userId = (req as any).userId;
+  const role = (req as any).role;
 
   try {
     const transfer = await prisma.transfer.findUnique({
@@ -268,6 +353,15 @@ export const receiveTransfer = async (req: Request, res: Response) => {
 
     if (!transfer) {
       return res.status(404).json({ status: 404, message: 'Transfer request not found' });
+    }
+
+    // Enforce warehouse scope: receiver must manage the destination warehouse
+    const accessibleIds = await getUserWarehouseIds(userId, role);
+    if (accessibleIds !== null && !accessibleIds.includes(transfer.destination_warehouse_id)) {
+      return res.status(403).json({
+        status: 403,
+        message: 'Forbidden: You can only receive transfers into your own warehouse',
+      });
     }
 
     if (transfer.status !== TransferStatus.DISPATCHED) {
@@ -339,25 +433,33 @@ export const receiveTransfer = async (req: Request, res: Response) => {
   }
 };
 
-// GET /transfers/suggest - Auto-suggest redistribution (LM, AD)
+// GET /transfers/suggest - Auto-suggest redistribution (LM sees only their warehouses; AD sees all)
 export const suggestTransfers = async (req: Request, res: Response) => {
+  const userId = (req as any).userId;
+  const role = (req as any).role;
+
   try {
+    const accessibleIds = await getUserWarehouseIds(userId, role);
+
     // 1. Fetch all products
     const products = await prisma.product.findMany();
     const suggestions: any[] = [];
 
     for (const product of products) {
-      // Fetch all inventory settings for this product
+      // Fetch inventory for this product, scoped to accessible warehouses
+      const inventoryWhere: any = { product_id: product.id };
+      if (accessibleIds !== null) {
+        inventoryWhere.warehouse_id = { in: accessibleIds };
+      }
+
       const inventories = await prisma.inventory.findMany({
-        where: { product_id: product.id },
+        where: inventoryWhere,
         include: { warehouse: true }
       });
 
-      // Identify needy warehouses (stock < low_stock_threshold) and suppliers (stock > low_stock_threshold)
       const needy = inventories.filter(inv => inv.quantity < inv.low_stock_threshold);
       const suppliers = inventories.filter(inv => inv.quantity > inv.low_stock_threshold);
 
-      // Sort suppliers descending by excess stock
       suppliers.sort((a, b) => (b.quantity - b.low_stock_threshold) - (a.quantity - a.low_stock_threshold));
 
       for (const target of needy) {
@@ -391,7 +493,6 @@ export const suggestTransfers = async (req: Request, res: Response) => {
                 suggested_quantity: transferQty,
               });
 
-              // Adjust source excess and target deficit for next iterations
               source.quantity -= transferQty;
               deficit -= transferQty;
             }

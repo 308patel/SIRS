@@ -41,7 +41,9 @@ const swaggerDocument = {
           last_login_at: { type: 'string', format: 'date-time', nullable: true },
           email_verified: { type: 'boolean' },
           created_at: { type: 'string', format: 'date-time' },
-          updated_at: { type: 'string', format: 'date-time' }
+          updated_at: { type: 'string', format: 'date-time' },
+          company_id: { type: 'string', format: 'uuid', nullable: true },
+          requested_company_id: { type: 'string', format: 'uuid', nullable: true }
         }
       },
       Company: {
@@ -417,6 +419,333 @@ const swaggerDocument = {
         }
       }
     },
+    '/api/users/me': {
+      get: {
+        security: [{ bearerAuth: [] }],
+        tags: ['Authentication & Users'],
+        summary: 'Get own profile (All roles)',
+        responses: {
+          200: {
+            description: 'Profile retrieved successfully',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'integer', example: 200 },
+                    message: { type: 'string', example: 'Own profile retrieved successfully' },
+                    data: {
+                      oneOf: [
+                        { $ref: '#/components/schemas/User' },
+                        { $ref: '#/components/schemas/Company' }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          401: { description: 'Unauthorized' },
+          404: { description: 'User or Company not found' },
+          500: { description: 'Server error' }
+        }
+      }
+    },
+    '/api/users/{id}': {
+      get: {
+        security: [{ bearerAuth: [] }],
+        tags: ['Authentication & Users'],
+        summary: 'Get user profile by ID (SUPER_ADMIN or ADMIN only)',
+        parameters: [
+          {
+            name: 'id',
+            in: 'path',
+            required: true,
+            schema: { type: 'string', format: 'uuid' },
+            description: 'User ID'
+          }
+        ],
+        responses: {
+          200: {
+            description: 'User profile retrieved successfully',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'integer', example: 200 },
+                    message: { type: 'string', example: 'User profile retrieved successfully' },
+                    data: { $ref: '#/components/schemas/User' }
+                  }
+                }
+              }
+            }
+          },
+          401: { description: 'Unauthorized' },
+          403: { description: 'Forbidden (insufficient role)' },
+          404: { description: 'User not found' },
+          500: { description: 'Server error' }
+        }
+      },
+      patch: {
+        security: [{ bearerAuth: [] }],
+        tags: ['Authentication & Users'],
+        summary: 'Update user details (ADMIN only)',
+        parameters: [
+          {
+            name: 'id',
+            in: 'path',
+            required: true,
+            schema: { type: 'string', format: 'uuid' },
+            description: 'User ID'
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  name: { type: 'string', example: 'Jane Doe' },
+                  phone: { type: 'string', example: '+1987654321' },
+                  role: { type: 'string', enum: ['SUPER_ADMIN', 'ADMIN', 'WORKSPACE_MANAGER', 'LOGISTIC_MANAGER', 'USER'] },
+                  status: { type: 'string', enum: ['ACTIVE', 'INACTIVE', 'SUSPENDED'] }
+                }
+              }
+            }
+          }
+        },
+        responses: {
+          200: {
+            description: 'User profile updated successfully',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'integer', example: 200 },
+                    message: { type: 'string', example: 'User profile updated successfully' },
+                    data: { $ref: '#/components/schemas/User' }
+                  }
+                }
+              }
+            }
+          },
+          401: { description: 'Unauthorized' },
+          403: { description: 'Forbidden (insufficient role)' },
+          404: { description: 'User not found' },
+          500: { description: 'Server error' }
+        }
+      },
+      delete: {
+        security: [{ bearerAuth: [] }],
+        tags: ['Authentication & Users'],
+        summary: 'Soft delete a user (SUPER_ADMIN or ADMIN only)',
+        parameters: [
+          {
+            name: 'id',
+            in: 'path',
+            required: true,
+            schema: { type: 'string', format: 'uuid' },
+            description: 'User ID'
+          }
+        ],
+        responses: {
+          200: { description: 'User soft deleted successfully' },
+          401: { description: 'Unauthorized' },
+          403: { description: 'Forbidden (insufficient role)' },
+          404: { description: 'User not found' },
+          500: { description: 'Server error' }
+        }
+      }
+    },
+    '/api/users/{id}/deactivate': {
+      patch: {
+        security: [{ bearerAuth: [] }],
+        tags: ['Authentication & Users'],
+        summary: 'Deactivate a user (ADMIN only)',
+        parameters: [
+          {
+            name: 'id',
+            in: 'path',
+            required: true,
+            schema: { type: 'string', format: 'uuid' },
+            description: 'User ID'
+          }
+        ],
+        responses: {
+          200: { description: 'User deactivated successfully' },
+          401: { description: 'Unauthorized' },
+          403: { description: 'Forbidden (insufficient role)' },
+          404: { description: 'User not found' },
+          500: { description: 'Server error' }
+        }
+      }
+    },
+    '/api/users/select-company': {
+      post: {
+        security: [{ bearerAuth: [] }],
+        tags: ['Authentication & Users'],
+        summary: 'Select a company to request to join (All authenticated users)',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['companyId'],
+                properties: {
+                  companyId: { type: 'string', format: 'uuid', example: 'company-uuid' }
+                }
+              }
+            }
+          }
+        },
+        responses: {
+          200: {
+            description: 'Company selection request submitted successfully',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'integer', example: 200 },
+                    message: { type: 'string', example: 'Company selection request submitted successfully' },
+                    data: { $ref: '#/components/schemas/User' }
+                  }
+                }
+              }
+            }
+          },
+          400: { description: 'Bad request (missing company ID)' },
+          401: { description: 'Unauthorized' },
+          404: { description: 'Company not found' },
+          500: { description: 'Server error' }
+        }
+      },
+      patch: {
+        security: [{ bearerAuth: [] }],
+        tags: ['Authentication & Users'],
+        summary: 'Update selected company request (All authenticated users)',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['companyId'],
+                properties: {
+                  companyId: { type: 'string', format: 'uuid', example: 'company-uuid' }
+                }
+              }
+            }
+          }
+        },
+        responses: {
+          200: {
+            description: 'Company selection request updated successfully',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'integer', example: 200 },
+                    message: { type: 'string', example: 'Company selection request submitted successfully' },
+                    data: { $ref: '#/components/schemas/User' }
+                  }
+                }
+              }
+            }
+          },
+          400: { description: 'Bad request (missing company ID)' },
+          401: { description: 'Unauthorized' },
+          404: { description: 'Company not found' },
+          500: { description: 'Server error' }
+        }
+      }
+    },
+    '/api/users/{id}/accept-join': {
+      patch: {
+        security: [{ bearerAuth: [] }],
+        tags: ['Authentication & Users'],
+        summary: 'Accept a user\'s company join request (ADMIN or COMPANY roles only)',
+        parameters: [
+          {
+            name: 'id',
+            in: 'path',
+            required: true,
+            schema: { type: 'string', format: 'uuid' },
+            description: 'User ID'
+          }
+        ],
+        responses: {
+          200: {
+            description: 'User join request accepted successfully',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'integer', example: 200 },
+                    message: { type: 'string', example: 'User join request accepted successfully' },
+                    data: { $ref: '#/components/schemas/User' }
+                  }
+                }
+              }
+            }
+          },
+          400: { description: 'Bad request (user has no request or validation failed)' },
+          401: { description: 'Unauthorized' },
+          403: { description: 'Forbidden (insufficient role or different company)' },
+          404: { description: 'User not found' },
+          500: { description: 'Server error' }
+        }
+      }
+    },
+    '/api/users/accept-join': {
+      patch: {
+        security: [{ bearerAuth: [] }],
+        tags: ['Authentication & Users'],
+        summary: 'Accept a user\'s company join request via body (ADMIN or COMPANY roles only)',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['userId'],
+                properties: {
+                  userId: { type: 'string', format: 'uuid', example: 'user-uuid' }
+                }
+              }
+            }
+          }
+        },
+        responses: {
+          200: {
+            description: 'User join request accepted successfully',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'integer', example: 200 },
+                    message: { type: 'string', example: 'User join request accepted successfully' },
+                    data: { $ref: '#/components/schemas/User' }
+                  }
+                }
+              }
+            }
+          },
+          400: { description: 'Bad request (user has no request or validation failed)' },
+          401: { description: 'Unauthorized' },
+          403: { description: 'Forbidden (insufficient role or different company)' },
+          404: { description: 'User not found' },
+          500: { description: 'Server error' }
+        }
+      }
+    },
     '/api/companies/register': {
       post: {
         tags: ['Company Management'],
@@ -592,6 +921,86 @@ const swaggerDocument = {
         }
       }
     },
+    '/api/companies/assign-admin': {
+      patch: {
+        security: [{ bearerAuth: [] }],
+        tags: ['Company Management'],
+        summary: 'Assign a user as an admin of the company (COMPANY role only)',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['userId'],
+                properties: {
+                  userId: { type: 'string', format: 'uuid', example: 'user-uuid' }
+                }
+              }
+            }
+          }
+        },
+        responses: {
+          200: {
+            description: 'Admin assigned successfully',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'integer', example: 200 },
+                    message: { type: 'string', example: 'Admin assigned successfully' },
+                    data: { $ref: '#/components/schemas/User' }
+                  }
+                }
+              }
+            }
+          },
+          400: { description: 'Bad request (missing user ID)' },
+          401: { description: 'Unauthorized' },
+          403: { description: 'Forbidden (insufficient role)' },
+          404: { description: 'User not found' },
+          500: { description: 'Server error' }
+        }
+      }
+    },
+    '/api/companies/assign-admin/{userId}': {
+      patch: {
+        security: [{ bearerAuth: [] }],
+        tags: ['Company Management'],
+        summary: 'Assign a user as an admin of the company via URL (COMPANY role only)',
+        parameters: [
+          {
+            name: 'userId',
+            in: 'path',
+            required: true,
+            schema: { type: 'string', format: 'uuid' },
+            description: 'User ID'
+          }
+        ],
+        responses: {
+          200: {
+            description: 'Admin assigned successfully',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'integer', example: 200 },
+                    message: { type: 'string', example: 'Admin assigned successfully' },
+                    data: { $ref: '#/components/schemas/User' }
+                  }
+                }
+              }
+            }
+          },
+          401: { description: 'Unauthorized' },
+          403: { description: 'Forbidden (insufficient role)' },
+          404: { description: 'User not found' },
+          500: { description: 'Server error' }
+        }
+      }
+    },
     '/api/admin/company/{id}/status': {
       patch: {
         security: [{ bearerAuth: [] }],
@@ -688,10 +1097,11 @@ const swaggerDocument = {
             'application/json': {
               schema: {
                 type: 'object',
-                required: ['name', 'contact_phone', 'operating_hours', 'status', 'total_capacity', 'capacity_unit', 'warehouse_type', 'address_line1', 'city', 'state', 'pincode', 'country'],
+                required: ['name', 'contact_phone','warehouse_code', 'operating_hours', 'status', 'total_capacity', 'capacity_unit', 'warehouse_type', 'address_line1', 'city', 'state', 'pincode', 'country'],
                 properties: {
                   name: { type: 'string', example: 'Main Logistics Hub' },
                   contact_phone: { type: 'string', example: '+12223334444' },
+                  warehouse_code:{type: 'string', example:'warehouse ahmedabad'},
                   operating_hours: { type: 'string', example: '08:00 - 20:00' },
                   status: { type: 'string', enum: ['OPERATIONAL', 'MAINTENANCE'], example: 'OPERATIONAL' },
                   warehouse_manager_id: { type: 'string', format: 'uuid', example: 'mngr-uuid-123' },
@@ -811,7 +1221,7 @@ const swaggerDocument = {
       delete: {
         security: [{ bearerAuth: [] }],
         tags: ['Warehouse Operations'],
-        summary: 'Soft-delete a warehouse (COMPANY role only)',
+        summary: 'Soft-delete a warehouse (ADMIN or COMPANY roles)',
         parameters: [
           {
             name: 'warehouse_id',
@@ -853,6 +1263,7 @@ const swaggerDocument = {
                   name: { type: 'string' },
                   contact_phone: { type: 'string' },
                   operating_hours: { type: 'string' },
+                  warehouse_code:{ type: 'string'},
                   status: { type: 'string', enum: ['OPERATIONAL', 'MAINTENANCE'] },
                   is_active: { type: 'boolean' },
                   warehouse_manager_id: { type: 'string', format: 'uuid' },
@@ -891,6 +1302,57 @@ const swaggerDocument = {
           },
           403: { description: 'Forbidden (Not authorized for this warehouse)' },
           404: { description: 'Warehouse not found' },
+          500: { description: 'Server error' }
+        }
+      }
+    },
+    '/api/warehouse/{id}/assign-manager': {
+      patch: {
+        security: [{ bearerAuth: [] }],
+        tags: ['Warehouse Operations'],
+        summary: 'Assign warehouse manager or logistic manager (ADMIN only)',
+        parameters: [
+          {
+            name: 'id',
+            in: 'path',
+            required: true,
+            schema: { type: 'string', format: 'uuid' },
+            description: 'Warehouse ID'
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  warehouse_manager_id: { type: 'string', format: 'uuid', nullable: true, example: 'user-uuid-1' },
+                  logistic_manager_id: { type: 'string', format: 'uuid', nullable: true, example: 'user-uuid-2' }
+                }
+              }
+            }
+          }
+        },
+        responses: {
+          200: {
+            description: 'Warehouse managers assigned and roles updated successfully',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    status: { type: 'integer', example: 200 },
+                    message: { type: 'string', example: 'Warehouse managers assigned successfully' },
+                    data: { $ref: '#/components/schemas/Warehouse' }
+                  }
+                }
+              }
+            }
+          },
+          401: { description: 'Unauthorized' },
+          403: { description: 'Forbidden (insufficient role)' },
+          404: { description: 'Warehouse or manager user not found' },
           500: { description: 'Server error' }
         }
       }

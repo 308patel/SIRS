@@ -1,11 +1,41 @@
 import { Request, Response } from 'express';
 import prisma from '../config/prisma';
-import { StockMovementType } from '../constant/enum';
+import { Role, StockMovementType } from '../constant/enum';
+
+// Helper: get the list of warehouse IDs accessible to the current user.
+// ADMIN / SUPER_ADMIN → null (meaning: no filter, see all)
+// WORKSPACE_MANAGER / LOGISTIC_MANAGER → warehouses where they are assigned as manager
+//   + the warehouse they are directly assigned to as staff (warehouse_id on User)
+async function getUserWarehouseIds(userId: string, role: string): Promise<string[] | null> {
+  if (role === Role.ADMIN || role === Role.SUPER_ADMIN) {
+    return null; // no restriction
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      warehouse_id: true,
+      warehouse_manager: { select: { id: true } },
+      warehouse_logistic_manager: { select: { id: true } },
+    },
+  });
+
+  if (!user) return [];
+
+  const ids = new Set<string>();
+
+  if (user.warehouse_id) ids.add(user.warehouse_id);
+  user.warehouse_manager.forEach((w) => ids.add(w.id));
+  user.warehouse_logistic_manager.forEach((w) => ids.add(w.id));
+
+  return Array.from(ids);
+}
 
 // POST /inventory - Add product to warehouse (WM)
 export const addProductToWarehouse = async (req: Request, res: Response) => {
   const { warehouse_id, product_name, sku, price, description, quantity, low_stock_threshold } = req.body;
   const userId = (req as any).userId;
+  const role = (req as any).role;
 
   try {
     if (!warehouse_id || !product_name || !sku || price === undefined) {
@@ -16,6 +46,15 @@ export const addProductToWarehouse = async (req: Request, res: Response) => {
     const warehouse = await prisma.warehouse.findUnique({ where: { id: warehouse_id, deleted_at: null } });
     if (!warehouse) {
       return res.status(404).json({ status: 404, message: 'Warehouse not found' });
+    }
+
+    // Enforce warehouse scope: non-admins can only add products to their own warehouses
+    const accessibleIds = await getUserWarehouseIds(userId, role);
+    if (accessibleIds !== null && !accessibleIds.includes(warehouse_id)) {
+      return res.status(403).json({
+        status: 403,
+        message: 'Forbidden: You are not authorized to manage inventory for this warehouse',
+      });
     }
 
     // Find or create product
@@ -91,10 +130,20 @@ export const addProductToWarehouse = async (req: Request, res: Response) => {
   }
 };
 
-// GET /inventory - List all inventory (AD, WM, LM)
+// GET /inventory - List all inventory (AD sees all; WM/LM see only their warehouses)
 export const listInventory = async (req: Request, res: Response) => {
+  const userId = (req as any).userId;
+  const role = (req as any).role;
+
   try {
+    const accessibleIds = await getUserWarehouseIds(userId, role);
+
+    const whereClause = accessibleIds !== null
+      ? { warehouse_id: { in: accessibleIds } }
+      : {};
+
     const inventory = await prisma.inventory.findMany({
+      where: whereClause,
       include: {
         warehouse: true,
         product: true,
@@ -116,8 +165,19 @@ export const listInventory = async (req: Request, res: Response) => {
 // GET /inventory/warehouse/:warehouseId - Stock in specific warehouse (AD, WM, LM)
 export const getStockInWarehouse = async (req: Request, res: Response) => {
   const { warehouseId } = req.params;
+  const userId = (req as any).userId;
+  const role = (req as any).role;
 
   try {
+    // Enforce warehouse scope
+    const accessibleIds = await getUserWarehouseIds(userId, role);
+    if (accessibleIds !== null && !accessibleIds.includes(warehouseId)) {
+      return res.status(403).json({
+        status: 403,
+        message: 'Forbidden: You do not have access to this warehouse',
+      });
+    }
+
     const inventory = await prisma.inventory.findMany({
       where: { warehouse_id: warehouseId },
       include: {
@@ -137,13 +197,22 @@ export const getStockInWarehouse = async (req: Request, res: Response) => {
   }
 };
 
-// GET /inventory/product/:productId - Stock of product across warehouses (AD, WM, LM)
+// GET /inventory/product/:productId - Stock of product across accessible warehouses (AD, WM, LM)
 export const getStockOfProduct = async (req: Request, res: Response) => {
   const { productId } = req.params;
+  const userId = (req as any).userId;
+  const role = (req as any).role;
 
   try {
+    const accessibleIds = await getUserWarehouseIds(userId, role);
+
+    const whereClause: any = { product_id: productId };
+    if (accessibleIds !== null) {
+      whereClause.warehouse_id = { in: accessibleIds };
+    }
+
     const inventory = await prisma.inventory.findMany({
-      where: { product_id: productId },
+      where: whereClause,
       include: {
         warehouse: true,
         product: true,
@@ -161,23 +230,20 @@ export const getStockOfProduct = async (req: Request, res: Response) => {
   }
 };
 
-// GET /inventory/low-stock - Items below threshold (AD, WM, LM)
+// GET /inventory/low-stock - Items below threshold (AD, WM, LM — scoped)
 export const getLowStockItems = async (req: Request, res: Response) => {
-  try {
-    const lowStock = await prisma.inventory.findMany({
-      where: {
-        quantity: {
-          lt: prisma.inventory.fields.low_stock_threshold
-        }
-      },
-      include: {
-        warehouse: true,
-        product: true,
-      }
-    });
+  const userId = (req as any).userId;
+  const role = (req as any).role;
 
-    // Alternatively, fallback if raw field comparisons are tricky in Prisma
+  try {
+    const accessibleIds = await getUserWarehouseIds(userId, role);
+
+    const whereClause = accessibleIds !== null
+      ? { warehouse_id: { in: accessibleIds } }
+      : {};
+
     const allInventory = await prisma.inventory.findMany({
+      where: whereClause,
       include: { warehouse: true, product: true }
     });
     const lowStockFiltered = allInventory.filter(item => item.quantity < item.low_stock_threshold);
@@ -193,11 +259,12 @@ export const getLowStockItems = async (req: Request, res: Response) => {
   }
 };
 
-// PATCH /inventory/:id/adjust - Manual stock adjustment (WM)
+// PATCH /inventory/:id/adjust - Manual stock adjustment (WM — own warehouse only)
 export const adjustStock = async (req: Request, res: Response) => {
   const { id } = req.params;
   const { quantity, adjustment, reason } = req.body; // quantity = absolute, adjustment = relative delta
   const userId = (req as any).userId;
+  const role = (req as any).role;
 
   try {
     const inventory = await prisma.inventory.findUnique({
@@ -207,6 +274,15 @@ export const adjustStock = async (req: Request, res: Response) => {
 
     if (!inventory) {
       return res.status(404).json({ status: 404, message: 'Inventory record not found' });
+    }
+
+    // Enforce warehouse scope
+    const accessibleIds = await getUserWarehouseIds(userId, role);
+    if (accessibleIds !== null && !accessibleIds.includes(inventory.warehouse_id)) {
+      return res.status(403).json({
+        status: 403,
+        message: 'Forbidden: You are not authorized to adjust stock for this warehouse',
+      });
     }
 
     let newQuantity = inventory.quantity;
@@ -257,14 +333,25 @@ export const adjustStock = async (req: Request, res: Response) => {
   }
 };
 
-// GET /inventory/:id/history - Stock movement log (AD, WM)
+// GET /inventory/:id/history - Stock movement log (AD, WM — scoped)
 export const getStockHistory = async (req: Request, res: Response) => {
   const { id } = req.params;
+  const userId = (req as any).userId;
+  const role = (req as any).role;
 
   try {
     const inventory = await prisma.inventory.findUnique({ where: { id } });
     if (!inventory) {
       return res.status(404).json({ status: 404, message: 'Inventory record not found' });
+    }
+
+    // Enforce warehouse scope
+    const accessibleIds = await getUserWarehouseIds(userId, role);
+    if (accessibleIds !== null && !accessibleIds.includes(inventory.warehouse_id)) {
+      return res.status(403).json({
+        status: 403,
+        message: 'Forbidden: You do not have access to this inventory record',
+      });
     }
 
     const history = await prisma.stockMovement.findMany({
@@ -288,11 +375,21 @@ export const getStockHistory = async (req: Request, res: Response) => {
   }
 };
 
-// GET /inventory/alerts - Capacity & low stock alerts (AD, WM, LM)
+// GET /inventory/alerts - Capacity & low stock alerts (AD, WM, LM — scoped)
 export const getInventoryAlerts = async (req: Request, res: Response) => {
+  const userId = (req as any).userId;
+  const role = (req as any).role;
+
   try {
+    const accessibleIds = await getUserWarehouseIds(userId, role);
+
+    const inventoryWhereClause = accessibleIds !== null
+      ? { warehouse_id: { in: accessibleIds } }
+      : {};
+
     // 1. Low stock alerts
     const allInventory = await prisma.inventory.findMany({
+      where: inventoryWhereClause,
       include: { warehouse: true, product: true }
     });
     const lowStockAlerts = allInventory
@@ -308,8 +405,12 @@ export const getInventoryAlerts = async (req: Request, res: Response) => {
       }));
 
     // 2. Capacity alerts (warehouses utilizing >= 90% of capacity)
+    const warehouseWhereClause = accessibleIds !== null
+      ? { deleted_at: null, id: { in: accessibleIds } }
+      : { deleted_at: null };
+
     const warehouses = await prisma.warehouse.findMany({
-      where: { deleted_at: null },
+      where: warehouseWhereClause,
       include: {
         warehouse_capacity: true,
         warehouse_inventory: true,
@@ -325,7 +426,6 @@ export const getInventoryAlerts = async (req: Request, res: Response) => {
       const totalCap = parseFloat(capacityRecord.total_capacity.toString());
       if (totalCap <= 0) continue;
 
-      // Sum quantities of all inventories in the warehouse
       const currentStockCount = wh.warehouse_inventory.reduce((sum, inv) => sum + inv.quantity, 0);
       const utilizationPercent = (currentStockCount / totalCap) * 100;
 

@@ -2,6 +2,7 @@ import { Request, response, Response } from 'express';
 import prisma from '../config/prisma';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import { Role, CompanyStatus } from '../constant/enum';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'supersecretkey';
 
@@ -81,7 +82,29 @@ export const getCompanyUsers = async (req: Request, res: Response)=> {
     }
 
     const usersList = await prisma.user
-    .findMany({ where: { company_id: req.params.company_id, deleted_at: null },select:{ id:true,name:true,email:true, phone:true, profile_image:true,role:true,status:true}, take:limit, skip:offset, orderBy:{created_at:'asc'}})//take: limit , skip: offset 
+    .findMany({ 
+      where: { company_id: req.params.company_id, deleted_at: null },
+      select: { 
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        profile_image: true,
+        role: true,
+        status: true,
+        warehouse_id: true,
+        warehouse: {
+          select: {
+            id: true,
+            name: true,
+            warehouse_code: true
+          }
+        }
+      }, 
+      take: limit, 
+      skip: offset, 
+      orderBy: { created_at: 'asc' }
+    })
     
     const count = await prisma.user
     .count({ where: { company_id: req.params.company_id, deleted_at: null, ...whereCondition
@@ -93,3 +116,107 @@ export const getCompanyUsers = async (req: Request, res: Response)=> {
     res.status(500).json({ status:500, message: 'Error in getting users list' });
   }
 }
+
+// Assign user as an admin of the logged-in company (only COMPANY role can call this)
+export const assignAdmin = async (req: Request, res: Response) => {
+  try {
+    const companyId = (req as any).companyId;
+    const userId = req.body.userId || req.params.userId;
+
+    if (!userId) {
+      return res.status(400).json({ status: 400, message: "User ID is required" });
+    }
+
+    // Find the user
+    const user = await prisma.user.findFirst({
+      where: { id: userId, deleted_at: null }
+    });
+
+    if (!user) {
+      return res.status(404).json({ status: 404, message: "User not found" });
+    }
+
+    // Update role to ADMIN and company_id to the logged-in company id
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        role: Role.ADMIN,
+        company_id: companyId,
+        requested_company_id: null, // Clear request since they are accepted/assigned
+        updated_at: new Date()
+      }
+    });
+
+    return res.status(200).json({
+      status: 200,
+      message: "Admin assigned successfully",
+      data: updatedUser
+    });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ status: 500, message: "Server error while assigning admin" });
+  }
+};
+
+export const getPendingCompanyUsers = async (req: Request, res: Response) => {
+  try {
+    const companyId = req.params.company_id;
+    const company = await prisma.company.findUnique({
+      where: { id: companyId }
+    });
+    if (!company) {
+      return res.status(404).json({ status: 404, message: "Company not found" });
+    }
+    const pendingUsers = await prisma.user.findMany({
+      where: {
+        requested_company_id: companyId,
+        company_id: null,
+        deleted_at: null
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        role: true,
+        status: true
+      },
+      orderBy: { created_at: 'asc' }
+    });
+    return res.status(200).json({
+      status: 200,
+      message: "Pending users retrieved successfully",
+      data: pendingUsers
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ status: 500, message: "Server error while retrieving pending users" });
+  }
+};
+
+export const getActiveCompaniesList = async (req: Request, res: Response) => {
+  try {
+    const activeCompanies = await prisma.company.findMany({
+      where: {
+        status: CompanyStatus.ACTIVE
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true
+      },
+      orderBy: {
+        name: 'asc'
+      }
+    });
+    return res.status(200).json({
+      status: 200,
+      message: "Active companies retrieved successfully",
+      data: activeCompanies
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ status: 500, message: "Server error while retrieving active companies list" });
+  }
+};

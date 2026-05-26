@@ -23,9 +23,12 @@ setupSwagger(app);
 
 // Routes
 app.use('/api/users', userRouter);
+app.use('/users', userRouter);
 app.use('/api/companies', companyRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/warehouse', warehouseRouter);
+app.use('/api/warehouses', warehouseRouter);
+app.use('/warehouses', warehouseRouter);
 
 // New Module Routes
 app.use('/api/transfers', transferRouter);

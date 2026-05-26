@@ -24,12 +24,15 @@ model User {
   deleted_at                      DateTime?
   company                         Company? @relation(fields: [company_id], references: [id])
   company_id                      String?
+  requested_company_id            String?
   warehouse_manager               Warehouse[] @relation("warehouse_manager")
   warehouse_logistic_manager      Warehouse[] @relation("logistic_manager")
   stock_movements                 StockMovement[]
   requested_transfers             Transfer[] @relation("requested_transfers")
   approved_transfers              Transfer[] @relation("approved_transfers")
   user_orders                     Order[] @relation("user_orders")
+  warehouse_id                    String? @db.VarChar(40)
+  warehouse                       Warehouse? @relation("warehouse_staff", fields: [warehouse_id], references: [id])
 }
 
 model Company {
@@ -73,6 +76,7 @@ model Warehouse{
   warehouse_inventory         Inventory[] @relation("warehouse_inventory")
   source_transfers            Transfer[] @relation("source_transfers")
   destination_transfers       Transfer[] @relation("destination_transfers")
+  staff                       User[]     @relation("warehouse_staff")
 }
 
 model WarehouseLocation{
