@@ -453,16 +453,50 @@ export const assignManager = async (req: Request, res: Response) => {
                         message: "Warehouse manager user not found"
                     });
                 }
-                // Update role and company_id in User table
+
+                // Demote the PREVIOUS warehouse_manager (if any and different from new one)
+                if (warehouse.warehouse_manager_id && warehouse.warehouse_manager_id !== managerId) {
+                    const prevManagerUpdate: any = { role: Role.USER };
+                    // Clear their warehouse_id only if they were assigned to this warehouse
+                    const prevManager = await prisma.user.findUnique({
+                        where: { id: warehouse.warehouse_manager_id },
+                        select: { warehouse_id: true }
+                    });
+                    if (prevManager?.warehouse_id === warehouseId) {
+                        prevManagerUpdate.warehouse_id = null;
+                    }
+                    await prisma.user.update({
+                        where: { id: warehouse.warehouse_manager_id },
+                        data: prevManagerUpdate
+                    });
+                }
+
+                // Promote the new manager
                 await prisma.user.update({
                     where: { id: managerId },
-                    data: { 
+                    data: {
                         role: Role.WORKSPACE_MANAGER,
-                        company_id: targetCompanyId
+                        company_id: targetCompanyId,
+                        warehouse_id: warehouseId,
                     }
                 });
                 data.warehouse_manager_id = managerId;
             } else {
+                // Slot is being cleared — demote whoever was in it
+                if (warehouse.warehouse_manager_id) {
+                    const prevManagerUpdate: any = { role: Role.USER };
+                    const prevManager = await prisma.user.findUnique({
+                        where: { id: warehouse.warehouse_manager_id },
+                        select: { warehouse_id: true }
+                    });
+                    if (prevManager?.warehouse_id === warehouseId) {
+                        prevManagerUpdate.warehouse_id = null;
+                    }
+                    await prisma.user.update({
+                        where: { id: warehouse.warehouse_manager_id },
+                        data: prevManagerUpdate
+                    });
+                }
                 data.warehouse_manager_id = null;
             }
         }
@@ -479,16 +513,49 @@ export const assignManager = async (req: Request, res: Response) => {
                         message: "Logistic manager user not found"
                     });
                 }
-                // Update role and company_id in User table
+
+                // Demote the PREVIOUS logistic_manager (if any and different from new one)
+                if (warehouse.logistic_manager_id && warehouse.logistic_manager_id !== managerId) {
+                    const prevManagerUpdate: any = { role: Role.USER };
+                    const prevManager = await prisma.user.findUnique({
+                        where: { id: warehouse.logistic_manager_id },
+                        select: { warehouse_id: true }
+                    });
+                    if (prevManager?.warehouse_id === warehouseId) {
+                        prevManagerUpdate.warehouse_id = null;
+                    }
+                    await prisma.user.update({
+                        where: { id: warehouse.logistic_manager_id },
+                        data: prevManagerUpdate
+                    });
+                }
+
+                // Promote the new logistic manager
                 await prisma.user.update({
                     where: { id: managerId },
-                    data: { 
+                    data: {
                         role: Role.LOGISTIC_MANAGER,
-                        company_id: targetCompanyId
+                        company_id: targetCompanyId,
+                        warehouse_id: warehouseId,
                     }
                 });
                 data.logistic_manager_id = managerId;
             } else {
+                // Slot is being cleared — demote whoever was in it
+                if (warehouse.logistic_manager_id) {
+                    const prevManagerUpdate: any = { role: Role.USER };
+                    const prevManager = await prisma.user.findUnique({
+                        where: { id: warehouse.logistic_manager_id },
+                        select: { warehouse_id: true }
+                    });
+                    if (prevManager?.warehouse_id === warehouseId) {
+                        prevManagerUpdate.warehouse_id = null;
+                    }
+                    await prisma.user.update({
+                        where: { id: warehouse.logistic_manager_id },
+                        data: prevManagerUpdate
+                    });
+                }
                 data.logistic_manager_id = null;
             }
         }

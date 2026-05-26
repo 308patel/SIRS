@@ -132,6 +132,12 @@ export const getUserProfile = async (req: Request, res: Response) => {
             name: true,
             warehouse_code: true
           }
+        },
+        company: {
+          select: {
+            id: true,
+            name: true
+          }
         }
       }
     });
@@ -177,6 +183,12 @@ export const getOwnProfile = async (req: Request, res: Response) => {
               id: true,
               name: true,
               warehouse_code: true
+            }
+          },
+          company: {
+            select: {
+              id: true,
+              name: true
             }
           }
         }
@@ -237,6 +249,59 @@ export const updateUserProfile = async (req: Request, res: Response) => {
         if (wh.warehouse_company_id !== user.company_id) {
           return res.status(400).json({ status: 400, message: "Warehouse does not belong to the user's company" });
         }
+
+        // User is being moved to a DIFFERENT warehouse
+        if (user.warehouse_id && user.warehouse_id !== wh.id) {
+          // Step 1: Clear manager/logistic_manager slots in the OLD warehouse
+          //         if this user was holding them. This prevents the ghost-manager bug.
+          const oldWarehouse = await prisma.warehouse.findUnique({
+            where: { id: user.warehouse_id },
+            select: { warehouse_manager_id: true, logistic_manager_id: true }
+          });
+          if (oldWarehouse) {
+            const clearData: any = {};
+            if (oldWarehouse.warehouse_manager_id === req.params.id) {
+              clearData.warehouse_manager_id = null;
+            }
+            if (oldWarehouse.logistic_manager_id === req.params.id) {
+              clearData.logistic_manager_id = null;
+            }
+            if (Object.keys(clearData).length > 0) {
+              await prisma.warehouse.update({
+                where: { id: user.warehouse_id },
+                data: clearData,
+              });
+            }
+          }
+
+          // Step 2: Reset the user's role to USER since they no longer manage the old warehouse
+          await prisma.user.update({ where: { id: req.params.id }, data: { role: Role.USER } });
+        }
+      } else {
+        // warehouse_id is being cleared (empty string or null) — also clean up old warehouse manager slots
+        if (user.warehouse_id) {
+          const oldWarehouse = await prisma.warehouse.findUnique({
+            where: { id: user.warehouse_id },
+            select: { warehouse_manager_id: true, logistic_manager_id: true }
+          });
+          if (oldWarehouse) {
+            const clearData: any = {};
+            if (oldWarehouse.warehouse_manager_id === req.params.id) {
+              clearData.warehouse_manager_id = null;
+            }
+            if (oldWarehouse.logistic_manager_id === req.params.id) {
+              clearData.logistic_manager_id = null;
+            }
+            if (Object.keys(clearData).length > 0) {
+              await prisma.warehouse.update({
+                where: { id: user.warehouse_id },
+                data: clearData,
+              });
+            }
+          }
+          // Reset role to USER when warehouse is unassigned
+          await prisma.user.update({ where: { id: req.params.id }, data: { role: Role.USER } });
+        }
       }
     }
 
@@ -259,6 +324,7 @@ export const updateUserProfile = async (req: Request, res: Response) => {
         }
       }
     });
+
 
     const { password_hash, ...profile } = updated;
     res.status(200).json({
